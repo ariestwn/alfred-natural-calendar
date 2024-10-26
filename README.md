@@ -1,6 +1,7 @@
 # Natural Language Calendar Alfred Workflow
 
 An Alfred workflow that allows you to create calendar events using natural language.
+[![alfred thumbnail](https://github.com/user-attachments/assets/3a93802d-24a1-4229-8763-081f2b15a0db)](https://github.com/user-attachments/assets/d015e4d0-7801-4cbe-85c5-608fc43e5593)
 
 ## Features
 
