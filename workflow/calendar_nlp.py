@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/anaderi/micromamba/envs/obsidian/bin/python
 # -*- coding: utf-8 -*-
 
 import sys
@@ -42,8 +42,9 @@ def ensure_dependencies():
 # Run dependency check before any other imports
 ensure_dependencies()
 
-# Now it's safe to import other modules
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+# Use only the local lib directory for dateutil
+lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
+sys.path.insert(0, lib_dir)
 from dateutil import parser, relativedelta
 import re
 from datetime import datetime, timedelta, date
@@ -459,21 +460,33 @@ class CalendarNLPProcessor:
             else:
                 return now + timedelta(minutes=amount)
                 
-        # Regular time pattern
-        match = re.search(self.time_pattern, text, re.IGNORECASE)
+        # Regular time pattern — prefer matches with am/pm over bare numbers
+        matches = list(re.finditer(self.time_pattern, text, re.IGNORECASE))
+        match = None
+        for m in matches:
+            if m.group(3):  # has am/pm
+                match = m
+                break
+        if not match and matches:
+            # Fall back to first match with colon (e.g. "14:30") or reasonable hour
+            for m in matches:
+                if m.group(2) or int(m.group(1)) <= 23:
+                    match = m
+                    break
+
         if match:
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
             meridiem = match.group(3).lower() if match.group(3) else ''
-            
+
             # Handle PM times
             if meridiem == 'pm' and hour != 12:
                 hour += 12
             elif meridiem == 'am' and hour == 12:
                 hour = 0
-                
+
             return base_date.replace(hour=hour, minute=minutes, second=0, microsecond=0)
-            
+
         return base_date
 
     def parse_event(self, text: str) -> dict:
@@ -533,22 +546,34 @@ class CalendarNLPProcessor:
         """Get base date from text"""
         today = datetime.now()
         text_lower = text.lower()
-        
+
         if 'tomorrow' in text_lower:
             return today + timedelta(days=1)
         elif 'next week' in text_lower:
             return today + timedelta(days=7)
-        
-        # Handle specific weekdays
+
+        # Try dateutil fuzzy parsing first — handles absolute dates like "March 24",
+        # "Tuesday 24 March", "June 5", etc. This must run before bare weekday
+        # matching so "Tuesday 24 March" resolves to March 24, not next Tuesday.
+        try:
+            parsed = parser.parse(text, fuzzy=True, default=today.replace(hour=0, minute=0, second=0, microsecond=0))
+            if parsed.date() != today.date():
+                if parsed.date() < today.date():
+                    parsed = parsed.replace(year=parsed.year + 1)
+                return parsed
+        except (ValueError, OverflowError):
+            pass
+
+        # Fall back to weekday-only matching (e.g., "meeting on Thursday")
         for day in self.weekday_map:
             if day in text_lower:
                 current_weekday = today.weekday()
                 target_weekday = list(self.weekday_map.keys()).index(day) % 7
                 days_ahead = (target_weekday - current_weekday) % 7
-                if days_ahead == 0:  # If it's the same day, move to next week
+                if days_ahead == 0:
                     days_ahead = 7
                 return today + timedelta(days=days_ahead)
-                
+
         return today
     
     def _add_optional_fields(self, event_details: dict, text: str, url: Optional[str], notes: Optional[str]):

@@ -1,12 +1,42 @@
-#!/usr/bin/env python3
+#!/Users/anaderi/micromamba/envs/obsidian/bin/python
 # -*- coding: utf-8 -*-
 
 import sys
 import os
+import subprocess
 import json
 import re
 from datetime import datetime, timedelta
 from typing import Optional, List
+
+def ensure_dependencies():
+    """Ensure all required dependencies are installed"""
+    workflow_dir = os.path.dirname(os.path.abspath(__file__))
+    lib_dir = os.path.join(workflow_dir, 'lib')
+
+    if not os.path.exists(lib_dir) or not os.path.exists(os.path.join(lib_dir, 'dateutil')):
+        setup_script = os.path.join(workflow_dir, 'setup.py')
+        try:
+            subprocess.run([sys.executable, setup_script],
+                         check=True,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError:
+            print(json.dumps({
+                "items": [{
+                    "title": "Setup failed",
+                    "subtitle": "Please check the workflow logs.",
+                    "valid": False
+                }]
+            }))
+            sys.exit(1)
+
+ensure_dependencies()
+
+# Use only the local lib directory for dateutil
+lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib')
+sys.path.insert(0, lib_dir)
+from dateutil import parser as dateutil_parser
 
 def get_workflow_data_dir():
     """Get Alfred workflow data directory"""
@@ -53,18 +83,32 @@ class EventPreview:
         return self.default_calendar
 
     def parse_time(self, text: str) -> Optional[datetime]:
-        """Parse time from text"""
-        match = re.search(self.time_pattern, text, re.IGNORECASE)
+        """Parse time from text, preferring matches with am/pm over bare numbers"""
+        matches = list(re.finditer(self.time_pattern, text, re.IGNORECASE))
+
+        # Prefer matches with am/pm marker
+        match = None
+        for m in matches:
+            if m.group(3):  # has am/pm
+                match = m
+                break
+        if not match and matches:
+            # Fall back to colon-formatted (e.g. "14:30") or valid bare hours
+            for m in matches:
+                if m.group(2) or int(m.group(1)) <= 23:
+                    match = m
+                    break
+
         if match:
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
             meridiem = match.group(3).lower() if match.group(3) else ''
-            
+
             if meridiem == 'pm' and hour != 12:
                 hour += 12
             elif meridiem == 'am' and hour == 12:
                 hour = 0
-            
+
             now = datetime.now()
             return now.replace(hour=hour, minute=minutes, second=0, microsecond=0)
         return None
@@ -84,6 +128,8 @@ class EventPreview:
 
     def parse_date(self, text: str) -> str:
         """Parse and format date from text"""
+        # Strip URLs before parsing (numbers in URLs confuse dateutil)
+        text = re.sub(r'https?://\S+', '', text)
         text_lower = text.lower()
         today = datetime.now()
         target_date = None
@@ -97,19 +143,33 @@ class EventPreview:
                         return f"Every {day.capitalize()} at {target_time.strftime('%-I:%M %p')}"
                     return f"Every {day.capitalize()}"
 
-        # Handle weekdays
-        for day in self.weekdays:
-            if day in text_lower:
-                target_date = self.get_next_weekday(day)
-                break
-
-        # Handle relative dates
+        # Handle relative dates first
         if 'tomorrow' in text_lower:
             target_date = today + timedelta(days=1)
         elif 'next week' in text_lower:
             target_date = today + timedelta(days=7)
-        elif not target_date:
-            target_date = today
+        else:
+            # Try dateutil fuzzy parsing — handles absolute dates like "March 24",
+            # "Tuesday 24 March", "June 5", etc.
+            try:
+                parsed = dateutil_parser.parse(text, fuzzy=True,
+                    default=today.replace(hour=0, minute=0, second=0, microsecond=0))
+                if parsed.date() != today.date():
+                    target_date = parsed
+                    if target_date.date() < today.date():
+                        target_date = target_date.replace(year=target_date.year + 1)
+            except (ValueError, OverflowError):
+                pass
+
+            # Fall back to weekday-only matching if no absolute date found
+            if not target_date:
+                for day in self.weekdays:
+                    if day in text_lower:
+                        target_date = self.get_next_weekday(day)
+                        break
+
+            if not target_date:
+                target_date = today
 
         # Set time if specified
         if target_date and target_time:
@@ -132,7 +192,9 @@ class EventPreview:
         """Clean title from input text"""
         # Remove calendar tag
         text = re.sub(self.calendar_pattern, '', text)
-        
+        # Strip URLs
+        text = re.sub(r'https?://\S+', '', text)
+
         # Remove date/time patterns
         patterns_to_remove = [
             r'\b(?:tomorrow|today|next|on|at|from|to|every|daily|weekly|monthly)\b.*$',
