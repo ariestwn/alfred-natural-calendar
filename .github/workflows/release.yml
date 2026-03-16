@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build .alfredworkflow
+        run: python scripts/build.py
+
+      - name: Get artifact path
+        id: artifact
+        run: |
+          FILE=$(ls dist/*.alfredworkflow)
+          echo "path=$FILE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename $FILE)" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          generate_release_notes: true

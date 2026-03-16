@@ -65,7 +65,8 @@ class CalendarNLPProcessor:
         self.calendars = self.get_available_calendars()
         self.config = self.load_config()
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
-        self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b'
+        # Require am/pm for bare hours to avoid matching date/day numbers
+        self.time_pattern = r'\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b'
         self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
         self.date_range_pattern = r'from\s+(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?:-|to)\s*(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)'
         self.duration_patterns = {
@@ -218,7 +219,7 @@ class CalendarNLPProcessor:
 
     def parse_duration(self, text: str) -> int:
         """Extract duration in minutes from text"""
-        # First check for time range (e.g., "5-6pm")
+        # First check for time range (e.g., "3-5pm")
         range_match = re.search(self.duration_patterns['time_range'], text, re.IGNORECASE)
         if range_match:
             start_hour, start_min, end_hour, end_min = range_match.groups()
@@ -226,14 +227,16 @@ class CalendarNLPProcessor:
             start_min = int(start_min) if start_min else 0
             end_hour = int(end_hour)
             end_min = int(end_min) if end_min else 0
-            
-            # Convert to 24-hour format if needed
-            if 'pm' in text.lower():
-                if start_hour != 12:
-                    start_hour += 12
+
+            # Detect meridiem from the matched portion and propagate to start
+            matched = range_match.group(0).lower()
+            if 'pm' in matched:
                 if end_hour != 12:
                     end_hour += 12
-            
+                # Propagate pm to start only if start hour is plausible (< end)
+                if start_hour != 12 and start_hour < end_hour:
+                    start_hour += 12
+
             duration_minutes = (end_hour * 60 + end_min) - (start_hour * 60 + start_min)
             if duration_minutes > 0:
                 return duration_minutes
@@ -257,33 +260,50 @@ class CalendarNLPProcessor:
 
     def clean_title(self, text: str) -> str:
         """Clean up the title"""
-        # First clean recurrence and date/time info
-        patterns_to_remove = [
-            r'\bevery\b\s+\w+',  # Remove "every" patterns
-            r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
-            r'\bon\s+(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?',  # Remove "on weekday"
-            r'\b(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?',  # Remove weekday mentions
-            r'\d{1,2}(?::\d{2})?\s*(?:am|pm).*$',
-            r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
-            r'(?:alert|remind).*$',
-            r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
-            r'url\s+https?://\S+'
-        ]
-        
         title = text
+        patterns_to_remove = [
+            # Recurrence
+            r'\bevery\s+\w+',
+            r'\bdaily\b|\bweekly\b|\bmonthly\b|\bannually\b|\byearly\b',
+            # Weekdays
+            r'\bon\s+(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?\b',
+            r'\b(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?\b',
+            # Relative dates (standalone)
+            r'\btomorrow\b|\btoday\b',
+            r'\bnext\s+(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+            # Explicit dates: "March 20", "20 March"
+            r'\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?!:\d{2})\b',
+            r'\b\d{1,2}(?!:\d{2})\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b',
+            # Time ranges like "3-5pm" — must come before bare time patterns
+            r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
+            # Time: "at 3pm", "at 15:15", "3pm", "15:15"
+            r'\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b',
+            r'\b\d{1,2}:\d{2}\s*(?:am|pm)?\b',
+            r'\b\d{1,2}\s*(?:am|pm)\b',
+            # Duration
+            r'\bfor\s+\d+(?:\.\d+)?\s*(?:day|hour|hr|minute|min)s?\b',
+            # Alerts
+            r'\bwith\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)\b',
+            r'\b(?:alert|remind)\s+\d+\s*(?:minute|min|hour)s?\s+before\b',
+            # Date range prepositions
+            r'\bfrom\b|\bto\b|\bon\b|\bat\b',
+            # URLs
+            r'url\s+https?://\S+',
+        ]
+
         for pattern in patterns_to_remove:
             title = re.sub(pattern, '', title, flags=re.IGNORECASE)
-        
+
         # Remove URLs and notes
         for pattern in self.url_patterns + self.notes_patterns:
             title = re.sub(pattern, '', title, flags=re.IGNORECASE)
-        
+
         # Clean up remaining artifacts
         title = re.sub(r'\s+for\s*$', '', title)
         title = re.sub(r'\s+in\s*$', '', title)
         title = re.sub(r'\s+at\s*$', '', title)
         title = re.sub(r'\s+', ' ', title)
-        
+
         return title.strip()
 
     def parse_location(self, text: str) -> Optional[str]:
@@ -460,24 +480,67 @@ class CalendarNLPProcessor:
                 return now + timedelta(minutes=amount)
                 
         # Regular time pattern
+        # First check for time range — return the START time
+        range_match = re.search(
+            r'(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
+            text, re.IGNORECASE
+        )
+        if range_match:
+            sh = int(range_match.group(1))
+            sm = int(range_match.group(2)) if range_match.group(2) else 0
+            emer = range_match.group(5).lower()
+            # Propagate end meridiem to start
+            if emer == 'pm' and sh != 12:
+                sh += 12
+            elif emer == 'am' and sh == 12:
+                sh = 0
+            return base_date.replace(hour=sh, minute=sm, second=0, microsecond=0)
+
         match = re.search(self.time_pattern, text, re.IGNORECASE)
         if match:
-            hour = int(match.group(1))
-            minutes = int(match.group(2)) if match.group(2) else 0
-            meridiem = match.group(3).lower() if match.group(3) else ''
-            
+            if match.group(1) is not None:  # HH:MM format
+                hour = int(match.group(1))
+                minutes = int(match.group(2))
+                meridiem = match.group(3).lower() if match.group(3) else ''
+            else:  # bare number with required am/pm
+                hour = int(match.group(4))
+                minutes = 0
+                meridiem = match.group(5).lower()
+
             # Handle PM times
             if meridiem == 'pm' and hour != 12:
                 hour += 12
             elif meridiem == 'am' and hour == 12:
                 hour = 0
-                
+
             return base_date.replace(hour=hour, minute=minutes, second=0, microsecond=0)
             
         return base_date
 
+    def expand_shorthands(self, text: str) -> str:
+        """Expand common shorthand terms before parsing"""
+        replacements = [
+            (r'\btmrw\b|\btmr\b|\btmro\b', 'tomorrow'),
+            (r'\btod\b|\btdy\b|\btoday\b', 'today'),
+            (r'\bnxt wk\b|\bnxt week\b|\bnw\b', 'next week'),
+            (r'\bw/\b', 'with'),
+            (r'\beve\b', 'evening'),
+            (r'\bmtg\b|\bmeet\b', 'meeting'),
+            (r'\bapt\b|\bappt\b', 'appointment'),
+            (r'\bdr\b', 'doctor'),
+            (r'\bwfh\b', 'work from home'),
+            (r'\blunch\b', 'lunch'),
+            (r'\b(\d+)m\b(?!arch|ay)', 'for \\1 minutes'),
+            (r'\b(\d+)h\b(?!our)', 'for \\1 hours'),
+        ]
+        result = text
+        for pattern, replacement in replacements:
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+        return result
+
     def parse_event(self, text: str) -> dict:
         try:
+            text = self.expand_shorthands(text)
             url, notes = self.parse_url_and_notes(text)
             clean_text = self._clean_text_for_parsing(text, url)
             
@@ -538,8 +601,20 @@ class CalendarNLPProcessor:
             return today + timedelta(days=1)
         elif 'next week' in text_lower:
             return today + timedelta(days=7)
-        
-        # Handle specific weekdays
+
+        # Try fuzzy date parsing first — handles "March 20", "17 March", "Tuesday 24 March",
+        # etc. This must run before bare weekday matching so "Tuesday 24 March" resolves
+        # to March 24, not next Tuesday.
+        try:
+            parsed = parser.parse(text, default=today, fuzzy=True)
+            if parsed.date() != today.date():
+                if parsed.date() < today.date():
+                    parsed = parsed.replace(year=parsed.year + 1)
+                return parsed
+        except (ValueError, OverflowError):
+            pass
+
+        # Fall back to weekday-only matching (e.g., "meeting on Thursday")
         for day in self.weekday_map:
             if day in text_lower:
                 current_weekday = today.weekday()
@@ -548,7 +623,7 @@ class CalendarNLPProcessor:
                 if days_ahead == 0:  # If it's the same day, move to next week
                     days_ahead = 7
                 return today + timedelta(days=days_ahead)
-                
+
         return today
     
     def _add_optional_fields(self, event_details: dict, text: str, url: Optional[str], notes: Optional[str]):
@@ -649,16 +724,16 @@ def create_calendar_event(event_details: dict) -> str:
             raise Exception(result.stderr)
         
         # Format notification...
-        time_str = start_date.strftime("%-I:%M %p")
+        time_str = f"{start_date.strftime('%-I:%M %p')} – {end_date.strftime('%-I:%M %p')}"
         today = datetime.now()
         tomorrow = today + timedelta(days=1)
-        
+
         if start_date.date() == today.date():
             date_str = f"Today at {time_str}"
         elif start_date.date() == tomorrow.date():
             date_str = f"Tomorrow at {time_str}"
         else:
-            date_str = start_date.strftime("%A, %B %-d at %I:%M %p")
+            date_str = start_date.strftime("%A, %B %-d at ") + time_str
         
         notification_details = f"📅 {event_details['calendar']} • {date_str}"
         if 'location' in event_details:
