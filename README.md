@@ -52,6 +52,29 @@ cl coffee break tomorrow 10:30am
 cl meeting thursday at 2pm
 ```
 
+## Specific Dates
+
+```bash
+# Month and day
+cl meeting Oct 21 at 2pm
+cl meeting October 21 at 2pm
+cl party September 5th at 8pm
+
+# Day and month
+cl meeting 21 October at 2pm
+
+# With an explicit year
+cl conference December 3 2026 at 10am
+cl meeting October 21, 2025 at 2pm
+
+# Numeric formats
+cl meeting 10/21 at 2pm      # month/day
+cl deadline 21/10 at 5pm     # day/month when the first number can't be a month
+cl flight 2026-11-02 at 6am
+```
+
+When the year is left out, the next occurrence of that date is used.
+
 ## Location Handling
 
 ```sh
@@ -138,10 +161,10 @@ cl class every tuesday and thursday at 3pm
 cl standup every day at 9am
 
 # Monthly recurring
-cl team meeting every month at 2pm ❌
+cl team meeting every month at 2pm
 
 # Yearly recurring
-cl birthday every year on 5/16 ❌
+cl birthday every year on 5/16
 
 # Recurring with end date
 cl lunch every tuesday until 2/5 ❌
@@ -178,8 +201,8 @@ cl #work project review at Room 301 tomorrow 2pm for 2 hours with 15min alert no
 cl quick meeting now
 
 # Near future
-cl meeting in 30 minutes ❌
-cl call in 2 hours ❌
+cl meeting in 30 minutes
+cl call in 2 hours
 ```
 
 ## Contributing

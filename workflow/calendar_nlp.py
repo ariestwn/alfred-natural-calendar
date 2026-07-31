@@ -43,12 +43,15 @@ def ensure_dependencies():
 ensure_dependencies()
 
 # Now it's safe to import other modules
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 from dateutil import parser, relativedelta
 import re
 from datetime import datetime, timedelta, date
 import urllib.parse
 from typing import Dict, Optional, List, Tuple
+
+import date_parser
 
 def get_workflow_data_dir():
     """Get Alfred workflow data directory"""
@@ -96,7 +99,8 @@ class CalendarNLPProcessor:
         self.recurrence_patterns = {
             # Only match explicit recurring patterns
             r'every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)': lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
-            r'every\s+(mon|tue|wed|thu|fri|sat|sun)': lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
+            # \b matters: without it "every month" matches "every mon"
+            r'every\s+(mon|tue|wed|thu|fri|sat|sun)\b': lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
             r'every\s+week(?:ly)?': 'FREQ=WEEKLY',
             r'every\s+day|daily': 'FREQ=DAILY',
             r'every\s+month|monthly': 'FREQ=MONTHLY',
@@ -257,20 +261,27 @@ class CalendarNLPProcessor:
 
     def clean_title(self, text: str) -> str:
         """Clean up the title"""
+        # The #calendar tag selects the calendar, it is not part of the title
+        title = re.sub(self.calendar_pattern, '', text)
+
+        # Longest weekday spellings first, and anchored with \b on both ends, so
+        # "thursday" is removed whole instead of leaving "rsday" behind.
+        weekdays = (r'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
+                    r'|mon|tue|wed|thu|fri|sat|sun')
+
         # First clean recurrence and date/time info
         patterns_to_remove = [
             r'\bevery\b\s+\w+',  # Remove "every" patterns
             r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
-            r'\bon\s+(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?',  # Remove "on weekday"
-            r'\b(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?',  # Remove weekday mentions
+            r'\bon\s+(?:' + weekdays + r')\b',  # Remove "on weekday"
+            r'\b(?:' + weekdays + r')\b',  # Remove weekday mentions
             r'\d{1,2}(?::\d{2})?\s*(?:am|pm).*$',
             r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
             r'(?:alert|remind).*$',
             r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
             r'url\s+https?://\S+'
         ]
-        
-        title = text
+
         for pattern in patterns_to_remove:
             title = re.sub(pattern, '', title, flags=re.IGNORECASE)
         
@@ -366,6 +377,11 @@ class CalendarNLPProcessor:
         
         return url, notes
 
+    def _strip_notes(self, text: str) -> str:
+        """Text with the free-form notes section removed"""
+        _, remaining = self._extract_notes(text)
+        return remaining
+
     def fix_relative_date(self, base_date: datetime, text: str) -> datetime:
         """Fix relative dates based on current date"""
         today = datetime.now()
@@ -459,21 +475,24 @@ class CalendarNLPProcessor:
             else:
                 return now + timedelta(minutes=amount)
                 
-        # Regular time pattern
-        match = re.search(self.time_pattern, text, re.IGNORECASE)
-        if match:
+        # Regular time pattern. A bare number is not necessarily an hour
+        # ("meeting 25 people"), so skip values that cannot be a clock time.
+        for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
             meridiem = match.group(3).lower() if match.group(3) else ''
-            
+
             # Handle PM times
             if meridiem == 'pm' and hour != 12:
                 hour += 12
             elif meridiem == 'am' and hour == 12:
                 hour = 0
-                
+
+            if not 0 <= hour <= 23 or not 0 <= minutes <= 59:
+                continue
+
             return base_date.replace(hour=hour, minute=minutes, second=0, microsecond=0)
-            
+
         return base_date
 
     def parse_event(self, text: str) -> dict:
@@ -484,6 +503,10 @@ class CalendarNLPProcessor:
             # Get calendar based on text or default
             calendar_name = self.parse_calendar_name(clean_text)
             
+            # Text with the date expression removed, used for the title and the
+            # location so "at Starbucks Oct 21" does not become the location
+            title_text = clean_text
+
             # Check for date range
             date_range = self.parse_date_range(clean_text)
             if date_range:
@@ -498,13 +521,26 @@ class CalendarNLPProcessor:
                     'alerts': self.parse_alerts(clean_text)
                 }
             else:
-                # Regular event parsing
-                parsed_date = self.parse_time(clean_text, self._get_base_date(clean_text))
-                duration = self.parse_duration(clean_text)
+                # Regular event parsing. Notes are dropped first so digits inside
+                # them are never read as a date or a time.
+                schedule_text = self._strip_notes(clean_text)
+
+                explicit_date = date_parser.find_date(schedule_text)
+                if explicit_date:
+                    base_date, date_str = explicit_date
+                    # The date has to go before the time is parsed, otherwise the
+                    # "21" in "Oct 21" is read as 21:00.
+                    schedule_text = date_parser.strip_date(schedule_text, date_str)
+                    title_text = date_parser.strip_date(title_text, date_str)
+                else:
+                    base_date = self._get_base_date(schedule_text)
+
+                parsed_date = self.parse_time(schedule_text, base_date)
+                duration = self.parse_duration(schedule_text)
                 end_date = parsed_date + timedelta(minutes=duration)
-                
+
                 event_details = {
-                    'title': self.clean_title(clean_text),
+                    'title': self.clean_title(title_text),
                     'calendar': calendar_name,
                     'start_date': parsed_date.strftime('%Y-%m-%d'),
                     'start_time': parsed_date.strftime('%H:%M:%S'),
@@ -513,8 +549,10 @@ class CalendarNLPProcessor:
                     'alerts': self.parse_alerts(clean_text)
                 }
             
-            # Add optional fields
-            self._add_optional_fields(event_details, clean_text, url, notes)
+            # Add optional fields. Recurrence still reads the untouched text,
+            # since "every year on 5/16" needs the date it contains.
+            self._add_optional_fields(event_details, clean_text, url, notes,
+                                      location_text=title_text)
             
             return event_details
         except Exception as e:
@@ -539,9 +577,10 @@ class CalendarNLPProcessor:
         elif 'next week' in text_lower:
             return today + timedelta(days=7)
         
-        # Handle specific weekdays
+        # Handle specific weekdays. The word boundaries keep "sat" from matching
+        # inside words like "satellite".
         for day in self.weekday_map:
-            if day in text_lower:
+            if re.search(r'\b' + day + r's?\b', text_lower):
                 current_weekday = today.weekday()
                 target_weekday = list(self.weekday_map.keys()).index(day) % 7
                 days_ahead = (target_weekday - current_weekday) % 7
@@ -551,9 +590,10 @@ class CalendarNLPProcessor:
                 
         return today
     
-    def _add_optional_fields(self, event_details: dict, text: str, url: Optional[str], notes: Optional[str]):
+    def _add_optional_fields(self, event_details: dict, text: str, url: Optional[str],
+                             notes: Optional[str], location_text: Optional[str] = None):
         """Add optional fields to event details"""
-        location = self.parse_location(text)
+        location = self.parse_location(location_text if location_text is not None else text)
         if location:
             event_details['location'] = location
             

@@ -40,9 +40,9 @@ class WorkflowBuilder:
         
         # Create temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Copy all workflow files (except lib if it exists)
+            # Copy all workflow files (except lib and local bytecode caches)
             for item in os.listdir(self.workflow_dir):
-                if item != 'lib':  # Skip lib directory
+                if item not in ('lib', '__pycache__'):
                     src = os.path.join(self.workflow_dir, item)
                     dst = os.path.join(temp_dir, item)
                     if os.path.isfile(src):
@@ -80,6 +80,7 @@ class WorkflowBuilder:
             'calendar_nlp.py',
             'preview.py',
             'calendar_profile.py',
+            'date_parser.py',
             'info.plist',
             'icon.png',
             'setup.py'
