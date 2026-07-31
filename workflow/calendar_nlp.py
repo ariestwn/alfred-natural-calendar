@@ -68,17 +68,20 @@ class CalendarNLPProcessor:
         self.calendars = self.get_available_calendars()
         self.config = self.load_config()
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
-        self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b'
+        # Longest first, so "3pm" is not read as "3p" followed by a stray "m"
+        self.meridiem = r'am|pm|a|p'
+        self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(' + self.meridiem + r')?\b'
         self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
         self.date_range_pattern = r'from\s+(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?:-|to)\s*(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)'
         self.duration_patterns = {
             'days': r'for\s+(\d+)\s+days?',
             'hours': r'for\s+(\d+)\s+hours?',
             'minutes': r'for\s+(\d+)\s+min(?:ute)?s?',
-            'time_range': r'(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?(?:\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?)'
+            'time_range': r'(\d{1,2})(?::(\d{2}))?\s*(?:' + self.meridiem + r')?'
+                          r'(?:\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(?:' + self.meridiem + r')?)'
         }
         self.location_patterns = [
-            r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:am|pm)|url:|notes?:|link:)|\s*$)'
+            r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:' + self.meridiem + r')|url:|notes?:|link:)|\s*$)'
         ]
         self.alert_patterns = {
             r'with\s+(\d+)\s*min(?:ute)?s?\s+(?:alert|reminder)': 'minutes',
@@ -275,7 +278,7 @@ class CalendarNLPProcessor:
             r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
             r'\bon\s+(?:' + weekdays + r')\b',  # Remove "on weekday"
             r'\b(?:' + weekdays + r')\b',  # Remove weekday mentions
-            r'\d{1,2}(?::\d{2})?\s*(?:am|pm).*$',
+            r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b.*$',
             r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
             r'(?:alert|remind).*$',
             r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
@@ -306,7 +309,7 @@ class CalendarNLPProcessor:
                 if not any(p in location.lower() for p in ['notes:', 'url:', 'link:', 'alert', 'remind']):
                     # Remove duration and time references
                     location = re.sub(r'for\s+\d+\s+(?:day|hour|minute|min)s?', '', location, flags=re.IGNORECASE)
-                    location = re.sub(r'\d{1,2}(?::\d{2})?\s*(?:am|pm)', '', location, flags=re.IGNORECASE)
+                    location = re.sub(r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b', '', location, flags=re.IGNORECASE)
                     location = re.sub(r'(?:^|\s+)(?:at|in)\s+', '', location, flags=re.IGNORECASE)
                     return location.strip()
         return None
@@ -322,7 +325,7 @@ class CalendarNLPProcessor:
         patterns_to_remove = [
             r'\bstarting\b',
             r'for\s+\d+\s+(?:day|hour|minute|min)s?',
-            r'\d{1,2}(?::\d{2})?\s*(?:am|pm)',
+            r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b',
             r'(?:^|\s+)(?:at|in)\s+',
             r'\s+for\s*$',
             r'url:.*$',
@@ -480,12 +483,13 @@ class CalendarNLPProcessor:
         for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
-            meridiem = match.group(3).lower() if match.group(3) else ''
+            # "pm" and "p" both mean afternoon, "am" and "a" both mean morning
+            meridiem = match.group(3).lower()[:1] if match.group(3) else ''
 
             # Handle PM times
-            if meridiem == 'pm' and hour != 12:
+            if meridiem == 'p' and hour != 12:
                 hour += 12
-            elif meridiem == 'am' and hour == 12:
+            elif meridiem == 'a' and hour == 12:
                 hour = 0
 
             if not 0 <= hour <= 23 or not 0 <= minutes <= 59:

@@ -44,6 +44,10 @@ cl team sync every monday at 10am
 cl meeting at 2pm
 cl lunch at 12pm
 
+# Short meridiem works too
+cl call at 3p
+cl standup at 9a
+
 # Event for tomorrow
 cl meeting tomorrow at 3pm
 cl coffee break tomorrow 10:30am

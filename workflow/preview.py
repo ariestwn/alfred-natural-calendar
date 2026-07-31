@@ -23,9 +23,11 @@ class EventPreview:
     def __init__(self):
         # Initialize patterns
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
-        self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b'
+        # Longest first, so "3pm" is not read as "3p" followed by a stray "m"
+        self.meridiem = r'am|pm|a|p'
+        self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(' + self.meridiem + r')?\b'
         self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
-        self.location_pattern = r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:am|pm)|url:|notes?:|link:)|\s*$)'
+        self.location_pattern = r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:' + self.meridiem + r')|url:|notes?:|link:)|\s*$)'
         
         # Load default calendar from config
         config_file = os.path.join(get_workflow_data_dir(), 'calendar_config.json')
@@ -73,11 +75,12 @@ class EventPreview:
         for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
-            meridiem = match.group(3).lower() if match.group(3) else ''
+            # "pm" and "p" both mean afternoon, "am" and "a" both mean morning
+            meridiem = match.group(3).lower()[:1] if match.group(3) else ''
 
-            if meridiem == 'pm' and hour != 12:
+            if meridiem == 'p' and hour != 12:
                 hour += 12
-            elif meridiem == 'am' and hour == 12:
+            elif meridiem == 'a' and hour == 12:
                 hour = 0
 
             if not 0 <= hour <= 23 or not 0 <= minutes <= 59:
@@ -191,7 +194,7 @@ class EventPreview:
         # Remove date/time patterns
         patterns_to_remove = [
             r'\b(?:tomorrow|today|next|on|at|from|to|every|daily|weekly|monthly)\b.*$',
-            r'\d{1,2}(?::(\d{2}))?\s*(?:am|pm).*$',
+            r'\d{1,2}(?::(\d{2}))?\s*(?:' + self.meridiem + r')\b.*$',
             r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
             r'(?:alert|remind).*$',
             r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
