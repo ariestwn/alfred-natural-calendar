@@ -8,6 +8,9 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, List
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import date_parser
+
 def get_workflow_data_dir():
     """Get Alfred workflow data directory"""
     data_dir = os.getenv('alfred_workflow_data')
@@ -21,6 +24,7 @@ class EventPreview:
         # Initialize patterns
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
         self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b'
+        self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
         self.location_pattern = r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:am|pm)|url:|notes?:|link:)|\s*$)'
         
         # Load default calendar from config
@@ -54,18 +58,31 @@ class EventPreview:
 
     def parse_time(self, text: str) -> Optional[datetime]:
         """Parse time from text"""
-        match = re.search(self.time_pattern, text, re.IGNORECASE)
-        if match:
+        now = datetime.now()
+
+        # "in 30 minutes" / "in 2 hours" — matches how calendar_nlp reads it
+        relative_match = re.search(self.relative_time_pattern, text, re.IGNORECASE)
+        if relative_match:
+            amount = int(relative_match.group(1))
+            unit = relative_match.group(2).lower()
+            delta = timedelta(hours=amount) if 'hour' in unit else timedelta(minutes=amount)
+            return (now + delta).replace(second=0, microsecond=0)
+
+        # A bare number is not necessarily an hour ("meeting 25 people"), so skip
+        # values that cannot be a clock time instead of crashing the preview.
+        for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
             hour = int(match.group(1))
             minutes = int(match.group(2)) if match.group(2) else 0
             meridiem = match.group(3).lower() if match.group(3) else ''
-            
+
             if meridiem == 'pm' and hour != 12:
                 hour += 12
             elif meridiem == 'am' and hour == 12:
                 hour = 0
-            
-            now = datetime.now()
+
+            if not 0 <= hour <= 23 or not 0 <= minutes <= 59:
+                continue
+
             return now.replace(hour=hour, minute=minutes, second=0, microsecond=0)
         return None
 
@@ -82,33 +99,68 @@ class EventPreview:
             days_ahead = 7
         return today + timedelta(days=days_ahead)
 
+    def strip_extras(self, text: str) -> str:
+        """Drop URLs and the free-form notes section so digits inside them are
+        never read as a date or a time"""
+        text = re.sub(r'(?:url|link):\s*\S+', ' ', text, flags=re.IGNORECASE)
+        text = re.sub(r'https?://\S+', ' ', text)
+        text = re.sub(r'(?:notes?|description|details?):\s*.*$', ' ', text,
+                      flags=re.IGNORECASE)
+        return text
+
+    def without_date(self, text: str) -> str:
+        """Text with any explicit date removed, so it cannot leak into the
+        title or the location"""
+        explicit_date = date_parser.find_date(self.strip_extras(text))
+        if explicit_date:
+            text = date_parser.strip_date(text, explicit_date[1])
+        return text
+
+    def find_weekday(self, text: str) -> Optional[str]:
+        """Find a weekday mentioned in text, without matching inside other
+        words ("satellite" must not count as "sat")"""
+        for day in self.weekdays:
+            if re.search(r'\b' + day + r's?\b', text):
+                return day
+        return None
+
     def parse_date(self, text: str) -> str:
         """Parse and format date from text"""
-        text_lower = text.lower()
+        text_lower = self.strip_extras(text.lower())
         today = datetime.now()
         target_date = None
+
+        # An explicit date wins over everything else, and has to be removed
+        # before the time is parsed so "Oct 21" is not read as 21:00.
+        explicit_date = date_parser.find_date(text_lower)
+        if explicit_date:
+            target_date, date_str = explicit_date
+            text_lower = date_parser.strip_date(text_lower, date_str)
+
         target_time = self.parse_time(text_lower)
 
         # Handle recurring events
         if 'every' in text_lower:
-            for day in self.weekdays:
-                if day in text_lower:
-                    if target_time:
-                        return f"Every {day.capitalize()} at {target_time.strftime('%-I:%M %p')}"
-                    return f"Every {day.capitalize()}"
-
-        # Handle weekdays
-        for day in self.weekdays:
-            if day in text_lower:
-                target_date = self.get_next_weekday(day)
-                break
+            day = self.find_weekday(text_lower)
+            if day:
+                if target_time:
+                    return f"Every {day.capitalize()} at {target_time.strftime('%-I:%M %p')}"
+                return f"Every {day.capitalize()}"
 
         # Handle relative dates
-        if 'tomorrow' in text_lower:
-            target_date = today + timedelta(days=1)
-        elif 'next week' in text_lower:
-            target_date = today + timedelta(days=7)
-        elif not target_date:
+        if not target_date:
+            if 'tomorrow' in text_lower:
+                target_date = today + timedelta(days=1)
+            elif 'next week' in text_lower:
+                target_date = today + timedelta(days=7)
+
+        # Handle weekdays
+        if not target_date:
+            day = self.find_weekday(text_lower)
+            if day:
+                target_date = self.get_next_weekday(day)
+
+        if not target_date:
             target_date = today
 
         # Set time if specified
@@ -132,7 +184,10 @@ class EventPreview:
         """Clean title from input text"""
         # Remove calendar tag
         text = re.sub(self.calendar_pattern, '', text)
-        
+
+        # Remove an explicit date so "meeting Oct 21" is titled "meeting"
+        text = self.without_date(text)
+
         # Remove date/time patterns
         patterns_to_remove = [
             r'\b(?:tomorrow|today|next|on|at|from|to|every|daily|weekly|monthly)\b.*$',
@@ -161,7 +216,7 @@ class EventPreview:
         title = self.clean_title(text)
         calendar = self.get_calendar(text)
         date = self.parse_date(text)
-        location = self.parse_location(text)
+        location = self.parse_location(self.without_date(text))
         
         # Instead of removing the calendar tag, preserve it
         subtitle_parts = [f"📅 {calendar}"]
