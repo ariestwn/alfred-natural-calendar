@@ -21,6 +21,16 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Check the tag matches the workflow version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PLIST=$(python -c "import plistlib; print(plistlib.load(open('workflow/info.plist','rb'))['version'])")
+          if [ "$TAG" != "$PLIST" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match workflow/info.plist version $PLIST. Bump the version, commit it, then move the tag."
+            exit 1
+          fi
+          echo "info.plist $PLIST matches tag $GITHUB_REF_NAME"
+
       - name: Build .alfredworkflow
         run: python scripts/build.py
 
