@@ -1,0 +1,14 @@
+version: 2
+
+updates:
+  # The release workflow pins every action to a commit SHA, which means no
+  # update ever arrives on its own. Dependabot reads the "# v7.0.1" comment
+  # next to each SHA and opens a PR with the new SHA when one is released.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
