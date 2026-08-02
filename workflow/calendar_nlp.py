@@ -97,9 +97,7 @@ class CalendarNLPProcessor:
             r'description:\s*([^|]+?)(?=(?:\s+url:|\s+link:|\s*$))',
             r'details?:\s*([^|]+?)(?=(?:\s+url:|\s+link:|\s*$))'
         ]
-        # Longest spellings first so "monday" never matches as "mon" + leftovers
-        self.weekdays_alt = (r'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
-                             r'|mon|tue|wed|thu|fri|sat|sun')
+        self.weekdays_alt = date_parser.WEEKDAYS_PATTERN
         _day = r'(?:' + self.weekdays_alt + r')'
 
         # Order matters: dict entries are tried in insertion order and the first
@@ -242,28 +240,7 @@ class CalendarNLPProcessor:
         # The #calendar tag selects the calendar, it is not part of the title
         title = re.sub(self.calendar_pattern, '', text)
 
-        # Longest weekday spellings first, and anchored with \b on both ends, so
-        # "thursday" is removed whole instead of leaving "rsday" behind.
-        weekdays = self.weekdays_alt
-        day = r'(?:' + weekdays + r')'
-
-        # First clean recurrence and date/time info
-        patterns_to_remove = [
-            date_parser.UNTIL_PATTERN,  # recurrence end date, not part of the title
-            self.time_range_pattern + r'.*$',  # "2-3pm" goes whole, not just "3pm"
-            # The full day list, so "every monday and wednesday" does not
-            # leave a stray "and" behind
-            r'\bevery\b\s+' + day + r'\b(?:\s*(?:,|and)\s*' + day + r'\b)*',
-            r'\bevery\b\s+\w+',  # Remove "every" patterns
-            r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
-            r'\bon\s+(?:' + weekdays + r')\b',  # Remove "on weekday"
-            r'\b(?:' + weekdays + r')\b',  # Remove weekday mentions
-            r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b.*$',
-            r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
-            r'(?:alert|remind).*$',
-            r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
-            r'url\s+https?://\S+'
-        ]
+        patterns_to_remove = date_parser.title_noise_patterns(self.meridiem)
 
         for pattern in patterns_to_remove:
             title = re.sub(pattern, '', title, flags=re.IGNORECASE)
@@ -280,20 +257,42 @@ class CalendarNLPProcessor:
         
         return title.strip()
 
-    def parse_location(self, text: str) -> Optional[str]:
-        """Extract location from text"""
+    def find_location(self, text: str) -> Tuple[Optional[str], str]:
+        """Location plus the span it occupied, so the title can drop it.
+
+        Returning the span keeps the title from repeating the location, without
+        guessing that every "in <word>" is a place — "check in with Bob" is not.
+        """
         for pattern in self.location_patterns:
             match = re.search(pattern, text)
-            if match:
-                location = match.group(1).strip()
-                if not any(p in location.lower() for p in ['notes:', 'url:', 'link:', 'alert', 'remind']):
-                    # Remove duration and time references
-                    location = re.sub(r'for\s+\d+\s+(?:day|hour|minute|min)s?', '', location, flags=re.IGNORECASE)
-                    location = re.sub(r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b', '', location, flags=re.IGNORECASE)
-                    location = re.sub(r'(?:^|\s+)(?:at|in)\s+', '', location, flags=re.IGNORECASE)
-                    return location.strip()
-        return None
-    
+            if not match:
+                continue
+
+            location = match.group(1).strip()
+            if not date_parser.is_place_phrase(location):
+                continue
+            if any(p in location.lower() for p in ['notes:', 'url:', 'link:', 'alert', 'remind']):
+                continue
+
+            # Remove duration and time references
+            location = re.sub(r'for\s+\d+\s+(?:day|hour|minute|min)s?', '', location, flags=re.IGNORECASE)
+            location = re.sub(r'\d{1,2}(?::\d{2})?\s*(?:' + self.meridiem + r')\b', '', location, flags=re.IGNORECASE)
+            location = re.sub(r'(?:^|\s+)(?:at|in)\s+', '', location, flags=re.IGNORECASE)
+            location = location.strip()
+            if location:
+                return location, match.group(0)
+
+        return None, ''
+
+    def parse_location(self, text: str) -> Optional[str]:
+        """Extract location from text"""
+        return self.find_location(text)[0]
+
+    def _without_location(self, text: str) -> str:
+        """Text minus the location phrase, so the title does not repeat it"""
+        location, span = self.find_location(text)
+        return text.replace(span, ' ', 1) if location else text
+
     def clean_location(self, text: str, time_str: str = '') -> Optional[str]:
         """Clean up location string"""
         if not text:
@@ -507,6 +506,7 @@ class CalendarNLPProcessor:
             # Text with the date expression removed, used for the title and the
             # location so "at Starbucks Oct 21" does not become the location
             title_text = clean_text
+            location = None
 
             # Check for date range
             date_range = self.parse_date_range(clean_text)
@@ -551,7 +551,7 @@ class CalendarNLPProcessor:
                 end_date = parsed_date + timedelta(minutes=duration)
 
                 event_details = {
-                    'title': self.clean_title(title_text),
+                    'title': self.clean_title(self._without_location(title_text)),
                     'calendar': calendar_name,
                     'start_date': parsed_date.strftime('%Y-%m-%d'),
                     'start_time': parsed_date.strftime('%H:%M:%S'),
@@ -562,8 +562,9 @@ class CalendarNLPProcessor:
             
             # Add optional fields. Recurrence still reads the untouched text,
             # since "every year on 5/16" needs the date it contains.
+            location = self.find_location(title_text)[0]
             self._add_optional_fields(event_details, clean_text, url, notes,
-                                      location_text=title_text)
+                                      location=location)
             
             return event_details
         except Exception as e:
@@ -602,9 +603,8 @@ class CalendarNLPProcessor:
         return today
     
     def _add_optional_fields(self, event_details: dict, text: str, url: Optional[str],
-                             notes: Optional[str], location_text: Optional[str] = None):
+                             notes: Optional[str], location: Optional[str] = None):
         """Add optional fields to event details"""
-        location = self.parse_location(location_text if location_text is not None else text)
         if location:
             event_details['location'] = location
             

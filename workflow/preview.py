@@ -200,17 +200,14 @@ class EventPreview:
         # Remove an explicit date so "meeting Oct 21" is titled "meeting"
         text = self.without_date(text)
 
-        # Remove date/time patterns
-        patterns_to_remove = [
-            r'\b(?:tomorrow|today|next|on|at|from|to|every|daily|weekly|monthly)\b.*$',
-            date_parser.UNTIL_PATTERN,
-            date_parser.TIME_RANGE_PATTERN + r'.*$',
-            r'\d{1,2}(?::(\d{2}))?\s*(?:' + self.meridiem + r')\b.*$',
-            r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
-            r'(?:alert|remind).*$',
-            r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
-            r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+|$)'
-        ]
+        # Drop the location phrase itself rather than every "in <word>", which
+        # would eat the "in" out of "check in with Bob"
+        match = re.search(self.location_pattern, text)
+        if match and date_parser.is_place_phrase(match.group(1).strip()):
+            text = text.replace(match.group(0), ' ', 1)
+
+        # Same list the created event uses, so the two titles cannot drift
+        patterns_to_remove = date_parser.title_noise_patterns(self.meridiem)
         
         for pattern in patterns_to_remove:
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
@@ -222,6 +219,8 @@ class EventPreview:
         match = re.search(self.location_pattern, text)
         if match:
             location = match.group(1).strip()
+            if not date_parser.is_place_phrase(location):
+                return None
             return location
         return None
 

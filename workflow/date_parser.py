@@ -184,6 +184,62 @@ def find_time_range(text: str) -> Optional[Tuple[int, int, int, int]]:
     return start, start_m, end, end_m
 
 
+# Longest spellings first so "monday" never matches as "mon" plus leftovers
+WEEKDAYS_PATTERN = (r'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
+                    r'|mon|tue|wed|thu|fri|sat|sun')
+
+# Words that answer "when", so "meeting in March" has no location and
+# "meeting thursday" is titled "meeting"
+_TEMPORAL_WORDS = (r'today|tomorrow|yesterday|tonight|noon|midnight|'
+                   r'the\s+(?:morning|afternoon|evening|night)|'
+                   r'(?:next|last|this)\s+\w+')
+
+_TEMPORAL_ONLY = re.compile(
+    r'^(?:' + MONTH_PATTERN + r'|' + WEEKDAYS_PATTERN + r'|' + _TEMPORAL_WORDS + r')$',
+    re.IGNORECASE)
+
+
+# A venue name does not open with one of these
+_NOT_A_PLACE = re.compile(r'^(?:with|and|or|about|for|to|from|by|via|re)\b',
+                          re.IGNORECASE)
+
+
+def is_place_phrase(text: str) -> bool:
+    """False when a phrase caught after "at"/"in" cannot name a venue.
+
+    A pattern looking for "at|in <something>" also swallows "meeting in March"
+    and "check in with Bob"; neither is a location.
+    """
+    text = text.strip().rstrip('.,')
+    if not text:
+        return False
+    return not (_TEMPORAL_ONLY.match(text) or _NOT_A_PLACE.match(text))
+
+
+def title_noise_patterns(meridiem: str = MERIDIEM) -> list:
+    """Regexes for scheduling words that are never part of an event title.
+
+    Shared so the preview and the created event agree; they used to disagree
+    about weekdays, which showed one title and created another.
+    """
+    day = r'(?:' + WEEKDAYS_PATTERN + r')'
+    return [
+        UNTIL_PATTERN,
+        TIME_RANGE_PATTERN + r'.*$',
+        # The whole day list, so "every monday and wednesday" leaves no "and"
+        r'\bevery\b\s+' + day + r'\b(?:\s*(?:,|and)\s*' + day + r'\b)*',
+        r'\bevery\b\s+\w+',
+        r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
+        r'\bon\s+' + day + r'\b',
+        r'\b' + day + r'\b',
+        r'\d{1,2}(?::\d{2})?\s*(?:' + meridiem + r')\b.*$',
+        r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
+        r'(?:alert|remind).*$',
+        r'with\s+\d+\s*(?:minute|min|hour)s?\s+(?:alert|reminder)',
+        r'url\s+https?://\S+',
+    ]
+
+
 def strip_until(text: str) -> str:
     """Drop an "until <date>" clause.
 

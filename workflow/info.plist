@@ -540,7 +540,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 		</dict>
 	</array>
 	<key>version</key>
-	<string>1.0.7</string>
+	<string>1.0.8</string>
 	<key>webaddress</key>
 	<string>https://github.com/ariestwn/alfred-natural-calendar</string>
 </dict>
