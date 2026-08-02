@@ -69,16 +69,14 @@ class CalendarNLPProcessor:
         self.config = self.load_config()
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
         # Longest first, so "3pm" is not read as "3p" followed by a stray "m"
-        self.meridiem = r'am|pm|a|p'
+        self.meridiem = date_parser.MERIDIEM
         self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(' + self.meridiem + r')?\b'
         self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
-        self.date_range_pattern = r'from\s+(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?:-|to)\s*(\w+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)'
+        self.time_range_pattern = date_parser.TIME_RANGE_PATTERN
         self.duration_patterns = {
             'days': r'for\s+(\d+)\s+days?',
             'hours': r'for\s+(\d+)\s+hours?',
             'minutes': r'for\s+(\d+)\s+min(?:ute)?s?',
-            'time_range': r'(\d{1,2})(?::(\d{2}))?\s*(?:' + self.meridiem + r')?'
-                          r'(?:\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(?:' + self.meridiem + r')?)'
         }
         self.location_patterns = [
             r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:' + self.meridiem + r')|url:|notes?:|link:)|\s*$)'
@@ -99,23 +97,26 @@ class CalendarNLPProcessor:
             r'description:\s*([^|]+?)(?=(?:\s+url:|\s+link:|\s*$))',
             r'details?:\s*([^|]+?)(?=(?:\s+url:|\s+link:|\s*$))'
         ]
+        # Longest spellings first so "monday" never matches as "mon" + leftovers
+        self.weekdays_alt = (r'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
+                             r'|mon|tue|wed|thu|fri|sat|sun')
+        _day = r'(?:' + self.weekdays_alt + r')'
+
+        # Order matters: dict entries are tried in insertion order and the first
+        # match wins, so the most specific pattern has to come first. The
+        # multi-day pattern requires at least one "and", which keeps it from
+        # shadowing the single-day patterns below.
         self.recurrence_patterns = {
-            # Only match explicit recurring patterns
-            r'every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)': lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
-            # \b matters: without it "every month" matches "every mon"
-            r'every\s+(mon|tue|wed|thu|fri|sat|sun)\b': lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
+            r'every\s+' + _day + r'\b(?:\s*(?:,|and)\s*' + _day + r'\b)+':
+                lambda x: 'FREQ=WEEKLY;BYDAY=' + ','.join(
+                    dict.fromkeys(d[:2].upper() for d in re.findall(
+                        r'\b' + _day + r'\b', x.group(0)))),
+            r'every\s+(' + self.weekdays_alt + r')\b':
+                lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()}',
             r'every\s+week(?:ly)?': 'FREQ=WEEKLY',
             r'every\s+day|daily': 'FREQ=DAILY',
             r'every\s+month|monthly': 'FREQ=MONTHLY',
             r'every\s+year|yearly|annually': 'FREQ=YEARLY',
-            
-            # Pattern for weekdays with end date
-            r'every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+until\s+(\d{1,2}/\d{1,2}(?:/\d{2,4})?)'
-            : lambda x: f'FREQ=WEEKLY;BYDAY={x.group(1)[:2].upper()};UNTIL={parser.parse(x.group(2)).strftime("%Y%m%dT235959Z")}',
-            
-            # Multiple weekdays must be explicit with "every"
-            r'every\s+(?:mon|tue|wed|thu|fri|sat|sun)(?:days?|\.)?(?:\s+and\s+(?:mon|tue|wed|thu|fri|sat|sun)(?:days?|\.)?)*': 
-                lambda x: f'FREQ=WEEKLY;BYDAY={",".join(day[:2].upper() for day in re.findall(r"mon|tue|wed|thu|fri|sat|sun", x.group(0)))}'
         }
         self.weekday_map = {
             'monday': 'MO', 'tuesday': 'TU', 'wednesday': 'WE', 'thursday': 'TH',
@@ -124,24 +125,10 @@ class CalendarNLPProcessor:
             'fri': 'FR', 'sat': 'SA', 'sun': 'SU'
         }
 
-    def parse_date_range(self, text: str) -> Optional[Tuple[datetime, datetime]]:
-        """Parse date range from text"""
-        match = re.search(self.date_range_pattern, text, re.IGNORECASE)
-        if match:
-            start_str, end_str = match.groups()
-            try:
-                start_date = parser.parse(start_str)
-                end_date = parser.parse(end_str)
-                # If year not specified, use current year
-                if start_date.year == datetime.now().year and end_date.year == datetime.now().year:
-                    if end_date < start_date:
-                        end_date = end_date.replace(year=end_date.year + 1)
-                return start_date, end_date
-            except:
-                return None
-        return None
-    
-    
+    def parse_date_range(self, text: str) -> Optional[Tuple[datetime, datetime, str]]:
+        """Parse a date range, returning (start, end, matched_text)"""
+        return date_parser.find_date_range(text)
+
     def load_config(self) -> Dict:
         """Load calendar configuration from the correct location"""
         data_dir = get_workflow_data_dir()
@@ -226,25 +213,13 @@ class CalendarNLPProcessor:
     def parse_duration(self, text: str) -> int:
         """Extract duration in minutes from text"""
         # First check for time range (e.g., "5-6pm")
-        range_match = re.search(self.duration_patterns['time_range'], text, re.IGNORECASE)
-        if range_match:
-            start_hour, start_min, end_hour, end_min = range_match.groups()
-            start_hour = int(start_hour)
-            start_min = int(start_min) if start_min else 0
-            end_hour = int(end_hour)
-            end_min = int(end_min) if end_min else 0
-            
-            # Convert to 24-hour format if needed
-            if 'pm' in text.lower():
-                if start_hour != 12:
-                    start_hour += 12
-                if end_hour != 12:
-                    end_hour += 12
-            
-            duration_minutes = (end_hour * 60 + end_min) - (start_hour * 60 + start_min)
+        time_range = date_parser.find_time_range(text)
+        if time_range:
+            start_h, start_m, end_h, end_m = time_range
+            duration_minutes = (end_h * 60 + end_m) - (start_h * 60 + start_m)
             if duration_minutes > 0:
                 return duration_minutes
-                
+
         # Check other duration patterns
         total_minutes = 60  # Default duration
         
@@ -269,11 +244,16 @@ class CalendarNLPProcessor:
 
         # Longest weekday spellings first, and anchored with \b on both ends, so
         # "thursday" is removed whole instead of leaving "rsday" behind.
-        weekdays = (r'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
-                    r'|mon|tue|wed|thu|fri|sat|sun')
+        weekdays = self.weekdays_alt
+        day = r'(?:' + weekdays + r')'
 
         # First clean recurrence and date/time info
         patterns_to_remove = [
+            date_parser.UNTIL_PATTERN,  # recurrence end date, not part of the title
+            self.time_range_pattern + r'.*$',  # "2-3pm" goes whole, not just "3pm"
+            # The full day list, so "every monday and wednesday" does not
+            # leave a stray "and" behind
+            r'\bevery\b\s+' + day + r'\b(?:\s*(?:,|and)\s*' + day + r'\b)*',
             r'\bevery\b\s+\w+',  # Remove "every" patterns
             r'\b(?:tomorrow|today|next|on|at|from|to|daily|weekly|monthly)\b.*$',
             r'\bon\s+(?:' + weekdays + r')\b',  # Remove "on weekday"
@@ -444,22 +424,40 @@ class CalendarNLPProcessor:
             
         text_lower = text.lower()
         
+        until = self._parse_until(text_lower)
+
         # Handle "every year on MM/DD"
         birthday_match = re.search(r'every\s+year\s+on\s+(\d{1,2}/\d{1,2})', text_lower)
         if birthday_match:
             date_str = birthday_match.group(1)
             month, day = map(int, date_str.split('/'))
-            return f'FREQ=YEARLY;BYMONTH={month};BYMONTHDAY={day}'
-        
+            return f'FREQ=YEARLY;BYMONTH={month};BYMONTHDAY={day}{until}'
+
         # Check other recurrence patterns
         for pattern, format_str in self.recurrence_patterns.items():
             match = re.search(pattern, text_lower)
             if match:
                 if callable(format_str):
-                    return format_str(match)
-                return format_str
-                
+                    return format_str(match) + until
+                return format_str + until
+
         return None
+
+    def _parse_until(self, text: str) -> str:
+        """RRULE UNTIL clause for "... until <date>", or an empty string.
+
+        Kept separate from the recurrence patterns so it applies to every
+        frequency, not just the weekday ones.
+        """
+        match = re.search(r'\buntil\s+(.+)$', text, re.IGNORECASE)
+        if not match:
+            return ''
+
+        found = date_parser.find_date(match.group(1))
+        if not found:
+            return ''
+
+        return ';UNTIL=' + found[0].strftime('%Y%m%dT235959Z')
     
     def parse_time(self, text: str, base_date: datetime) -> datetime:
         """Parse time from text with proper handling of different formats"""
@@ -478,19 +476,18 @@ class CalendarNLPProcessor:
             else:
                 return now + timedelta(minutes=amount)
                 
+        # A range carries its own meridiem rules, so it has to win over the
+        # single-time pattern, which would read "2-3pm" as plain "2".
+        time_range = date_parser.find_time_range(text)
+        if time_range:
+            return base_date.replace(hour=time_range[0], minute=time_range[1],
+                                     second=0, microsecond=0)
+
         # Regular time pattern. A bare number is not necessarily an hour
         # ("meeting 25 people"), so skip values that cannot be a clock time.
         for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
-            hour = int(match.group(1))
+            hour = date_parser.to_24h(int(match.group(1)), match.group(3))
             minutes = int(match.group(2)) if match.group(2) else 0
-            # "pm" and "p" both mean afternoon, "am" and "a" both mean morning
-            meridiem = match.group(3).lower()[:1] if match.group(3) else ''
-
-            # Handle PM times
-            if meridiem == 'p' and hour != 12:
-                hour += 12
-            elif meridiem == 'a' and hour == 12:
-                hour = 0
 
             if not 0 <= hour <= 23 or not 0 <= minutes <= 59:
                 continue
@@ -514,9 +511,17 @@ class CalendarNLPProcessor:
             # Check for date range
             date_range = self.parse_date_range(clean_text)
             if date_range:
-                start_date, end_date = date_range
+                start_date, end_date, range_str = date_range
+                # Whatever is left once the range is removed may still name a
+                # time, as in "from 1/21 to 2/23 at 2pm"
+                title_text = clean_text.replace(range_str, ' ', 1)
+                at_time = self.parse_time(self._strip_notes(title_text), start_date)
+                if at_time != start_date:
+                    start_date = at_time
+                    end_date = end_date.replace(hour=at_time.hour, minute=at_time.minute)
+
                 event_details = {
-                    'title': self.clean_title(clean_text),
+                    'title': self.clean_title(title_text),
                     'calendar': calendar_name,
                     'start_date': start_date.strftime('%Y-%m-%d'),
                     'start_time': start_date.strftime('%H:%M:%S'),
@@ -527,7 +532,9 @@ class CalendarNLPProcessor:
             else:
                 # Regular event parsing. Notes are dropped first so digits inside
                 # them are never read as a date or a time.
-                schedule_text = self._strip_notes(clean_text)
+                # "every tuesday until 2/5" ends the recurrence; that date must
+                # not be read as the event's own time
+                schedule_text = date_parser.strip_until(self._strip_notes(clean_text))
 
                 explicit_date = date_parser.find_date(schedule_text)
                 if explicit_date:

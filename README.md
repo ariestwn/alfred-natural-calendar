@@ -37,8 +37,6 @@ cl team sync every monday at 10am
 
 ## Basic Event Creation
 
-> ❌ ← Means it's still not working as expected
-
 ```bash
 # Simple event with time
 cl meeting at 2pm
@@ -116,8 +114,9 @@ cl workshop at 10am for 3 hours
 cl call at 3pm for 30 minutes
 
 # Time range format
-cl meeting 2-3pm ❌
-cl training 9:30am-11:30am ❌
+cl meeting 2-3pm
+cl training 9:30am-11:30am
+cl call 9am-5pm
 ```
 
 ## Reminders/Alert
@@ -158,8 +157,9 @@ cl team sync every monday at 10am
 cl meeting every friday at 2pm
 
 # Multiple days recurring
-cl gym every monday and wednesday at 6pm ❌
+cl gym every monday and wednesday at 6pm
 cl class every tuesday and thursday at 3pm
+cl standup every monday, wednesday and friday at 9am
 
 # Daily recurring
 cl standup every day at 9am
@@ -171,18 +171,20 @@ cl team meeting every month at 2pm
 cl birthday every year on 5/16
 
 # Recurring with end date
-cl lunch every tuesday until 2/5 ❌
+cl lunch every tuesday until 2/5
+cl standup every day until March 31
 ```
 
 ## Date Ranges
 
 ```sh
 # Multi-day events
-cl vacation from August 9-18 ❌
-cl conference from 6/15 to 6/17 ❌
+cl vacation from August 9-18
+cl conference from 6/15 to 6/17
+cl trip from Aug 9 to Aug 18
 
 # Date range with times
-cl training from 1/21 to 2/23 at 2pm ❌
+cl training from 1/21 to 2/23 at 2pm
 ```
 
 ## Complex Combination

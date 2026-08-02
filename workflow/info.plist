@@ -275,12 +275,14 @@ cl team sync every monday at 10am
 
 ## Basic Event Creation
 
-&gt; ❌ ← Means it's still not working as expected
-
 ```bash
 # Simple event with time
 cl meeting at 2pm
 cl lunch at 12pm
+
+# Short meridiem works too
+cl call at 3p
+cl standup at 9a
 
 # Event for tomorrow
 cl meeting tomorrow at 3pm
@@ -289,6 +291,29 @@ cl coffee break tomorrow 10:30am
 # Event for specific day
 cl meeting thursday at 2pm
 ```
+
+## Specific Dates
+
+```bash
+# Month and day
+cl meeting Oct 21 at 2pm
+cl meeting October 21 at 2pm
+cl party September 5th at 8pm
+
+# Day and month
+cl meeting 21 October at 2pm
+
+# With an explicit year
+cl conference December 3 2026 at 10am
+cl meeting October 21, 2025 at 2pm
+
+# Numeric formats
+cl meeting 10/21 at 2pm      # month/day
+cl deadline 21/10 at 5pm     # day/month when the first number can't be a month
+cl flight 2026-11-02 at 6am
+```
+
+When the year is left out, the next occurrence of that date is used.
 
 ## Location Handling
 
@@ -327,8 +352,9 @@ cl workshop at 10am for 3 hours
 cl call at 3pm for 30 minutes
 
 # Time range format
-cl meeting 2-3pm ❌
-cl training 9:30am-11:30am ❌
+cl meeting 2-3pm
+cl training 9:30am-11:30am
+cl call 9am-5pm
 ```
 
 ## Reminders/Alert
@@ -369,31 +395,34 @@ cl team sync every monday at 10am
 cl meeting every friday at 2pm
 
 # Multiple days recurring
-cl gym every monday and wednesday at 6pm ❌
+cl gym every monday and wednesday at 6pm
 cl class every tuesday and thursday at 3pm
+cl standup every monday, wednesday and friday at 9am
 
 # Daily recurring
 cl standup every day at 9am
 
 # Monthly recurring
-cl team meeting every month at 2pm ❌
+cl team meeting every month at 2pm
 
 # Yearly recurring
-cl birthday every year on 5/16 ❌
+cl birthday every year on 5/16
 
 # Recurring with end date
-cl lunch every tuesday until 2/5 ❌
+cl lunch every tuesday until 2/5
+cl standup every day until March 31
 ```
 
 ## Date Ranges
 
 ```sh
 # Multi-day events
-cl vacation from August 9-18 ❌
-cl conference from 6/15 to 6/17 ❌
+cl vacation from August 9-18
+cl conference from 6/15 to 6/17
+cl trip from Aug 9 to Aug 18
 
 # Date range with times
-cl training from 1/21 to 2/23 at 2pm ❌
+cl training from 1/21 to 2/23 at 2pm
 ```
 
 ## Complex Combination
@@ -416,8 +445,8 @@ cl #work project review at Room 301 tomorrow 2pm for 2 hours with 15min alert no
 cl quick meeting now
 
 # Near future
-cl meeting in 30 minutes ❌
-cl call in 2 hours ❌
+cl meeting in 30 minutes
+cl call in 2 hours
 ```
 
 ## Contributing
@@ -511,7 +540,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 		</dict>
 	</array>
 	<key>version</key>
-	<string>1.0.6</string>
+	<string>1.0.7</string>
 	<key>webaddress</key>
 	<string>https://github.com/ariestwn/alfred-natural-calendar</string>
 </dict>

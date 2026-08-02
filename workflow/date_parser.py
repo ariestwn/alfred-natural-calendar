@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Explicit calendar date parsing shared by calendar_nlp.py and preview.py.
+"""Date and time expression parsing shared by calendar_nlp.py and preview.py.
+
+Anything both entry points need to agree on belongs here. They used to keep
+private copies of these patterns, which is how the preview ended up showing a
+different time from the event it created.
 
 Deliberately stdlib-only: preview.py runs on every keystroke and must not pay
 for the bundled lib/ dependencies.
@@ -17,9 +21,12 @@ MONTHS = {
     'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
 }
 
-_MONTH = (r'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
-          r'jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|'
-          r'nov(?:ember)?|dec(?:ember)?')
+# Public: callers that need to spot a month name in their own patterns, such as
+# the "from August 9-18" date range, build on this.
+MONTH_PATTERN = (r'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
+                 r'jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|'
+                 r'nov(?:ember)?|dec(?:ember)?')
+_MONTH = MONTH_PATTERN
 _ORD = r'(?:st|nd|rd|th)?'
 
 # A day number is always required, so bare month mentions ("meeting in March")
@@ -126,3 +133,106 @@ def find_date(text: str,
 def strip_date(text: str, matched: str) -> str:
     """Remove a matched date expression from text."""
     return re.sub(r'\s+', ' ', text.replace(matched, ' ', 1)).strip()
+
+
+# Longest first, so "3pm" is not read as "3p" followed by a stray "m"
+MERIDIEM = r'am|pm|a|p'
+
+# The end must carry a meridiem; a bare "2-3" is too ambiguous to treat as a
+# time range at all.
+TIME_RANGE_PATTERN = (r'\b(\d{1,2})(?::(\d{2}))?\s*(' + MERIDIEM + r')?'
+                      r'\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(' + MERIDIEM + r')\b')
+
+# Public: the title cleanup strips this clause too.
+UNTIL_PATTERN = r'\buntil\b.*$'
+
+
+def to_24h(hour: int, meridiem: Optional[str]) -> int:
+    """Hour in 24-hour form. "pm"/"p" mean afternoon, "am"/"a" morning."""
+    marker = meridiem.lower()[:1] if meridiem else ''
+    if marker == 'p' and hour != 12:
+        return hour + 12
+    if marker == 'a' and hour == 12:
+        return 0
+    return hour
+
+
+def find_time_range(text: str) -> Optional[Tuple[int, int, int, int]]:
+    """Start and end of a range like "2-3pm" as (hour, minute, hour, minute).
+
+    A range usually marks the meridiem once, at the end, so "2-3pm" has to read
+    as 14:00-15:00 rather than 02:00-03:00.
+    """
+    match = re.search(TIME_RANGE_PATTERN, text, re.IGNORECASE)
+    if not match:
+        return None
+
+    start_h, start_m, start_mer, end_h, end_m, end_mer = match.groups()
+    start_m = int(start_m) if start_m else 0
+    end_m = int(end_m) if end_m else 0
+    start = to_24h(int(start_h), start_mer or end_mer)
+    end = to_24h(int(end_h), end_mer)
+
+    # An inherited meridiem that puts the start after the end is wrong:
+    # "11-1pm" is 11:00 to 13:00, not 23:00 to 13:00.
+    if not start_mer and start * 60 + start_m > end * 60 + end_m:
+        start = int(start_h)
+
+    if not (0 <= start <= 23 and 0 <= end <= 23):
+        return None
+
+    return start, start_m, end, end_m
+
+
+def strip_until(text: str) -> str:
+    """Drop an "until <date>" clause.
+
+    That date ends a recurrence, so it must not be read as the event's own date
+    or time.
+    """
+    return re.sub(UNTIL_PATTERN, '', text, flags=re.IGNORECASE)
+
+
+def find_date_range(text: str) -> Optional[Tuple[datetime, datetime, str]]:
+    """Parse a date range, returning (start, end, matched_text).
+
+    Both dates come back at midnight; the caller applies any explicit
+    time-of-day. The matched text is returned so the caller can strip it
+    before reading a time out of what is left.
+    """
+    # "from August 9-18" — the second day inherits the month
+    same_month = re.search(
+        r'from\s+(' + MONTH_PATTERN + r')\.?\s+(\d{1,2})'
+        r'\s*(?:-|to|until|through)\s*(\d{1,2})\b', text, re.IGNORECASE)
+    if same_month:
+        month_name, first, second = same_month.groups()
+        start = find_date(f'{month_name} {first}')
+        end = find_date(f'{month_name} {second}')
+        if start and end:
+            return _order_range(start[0], end[0], same_month.group(0))
+
+    # "from <date> to <date>"
+    both = re.search(r'from\s+(.+?)\s*(?:-|\bto\b|\buntil\b|\bthrough\b)\s+(.+)$',
+                     text, re.IGNORECASE)
+    if both:
+        start = find_date(both.group(1))
+        end = find_date(both.group(2))
+        if start and end:
+            # Trim the trailing time off the matched span so "at 2pm" stays
+            # available to the caller
+            matched = both.group(0)
+            tail = re.search(r'\s+at\s+\d', matched)
+            if tail:
+                matched = matched[:tail.start()]
+            return _order_range(start[0], end[0], matched)
+
+    return None
+
+def _order_range(start: datetime, end: datetime,
+             matched: str) -> Tuple[datetime, datetime, str]:
+    """Normalize a range to midnight, pushing the end past the start"""
+    start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    if end < start:
+        end = end.replace(year=end.year + 1)
+    return start, end, matched

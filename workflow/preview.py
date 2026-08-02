@@ -23,8 +23,7 @@ class EventPreview:
     def __init__(self):
         # Initialize patterns
         self.calendar_pattern = r'#(?:"([^"]+)"|\'([^\']+)\'|([^"\'\s]+))'
-        # Longest first, so "3pm" is not read as "3p" followed by a stray "m"
-        self.meridiem = r'am|pm|a|p'
+        self.meridiem = date_parser.MERIDIEM
         self.time_pattern = r'\b(\d{1,2})(?::(\d{2}))?\s*(' + self.meridiem + r')?\b'
         self.relative_time_pattern = r'in\s+(\d+)\s+(minutes?|hours?)'
         self.location_pattern = r'(?:^|\s)(?:at|in)\s+([^,\.\d][^,\.]*?)(?=\s+(?:on|at|from|tomorrow|today|next|every|\d{1,2}(?::\d{2})?(?:' + self.meridiem + r')|url:|notes?:|link:)|\s*$)'
@@ -70,18 +69,18 @@ class EventPreview:
             delta = timedelta(hours=amount) if 'hour' in unit else timedelta(minutes=amount)
             return (now + delta).replace(second=0, microsecond=0)
 
+        # A range carries its own meridiem rules, so it has to win over the
+        # single-time pattern, which would read "2-3pm" as plain "2".
+        time_range = date_parser.find_time_range(text)
+        if time_range:
+            return now.replace(hour=time_range[0], minute=time_range[1],
+                               second=0, microsecond=0)
+
         # A bare number is not necessarily an hour ("meeting 25 people"), so skip
         # values that cannot be a clock time instead of crashing the preview.
         for match in re.finditer(self.time_pattern, text, re.IGNORECASE):
-            hour = int(match.group(1))
+            hour = date_parser.to_24h(int(match.group(1)), match.group(3))
             minutes = int(match.group(2)) if match.group(2) else 0
-            # "pm" and "p" both mean afternoon, "am" and "a" both mean morning
-            meridiem = match.group(3).lower()[:1] if match.group(3) else ''
-
-            if meridiem == 'p' and hour != 12:
-                hour += 12
-            elif meridiem == 'a' and hour == 12:
-                hour = 0
 
             if not 0 <= hour <= 23 or not 0 <= minutes <= 59:
                 continue
@@ -109,7 +108,7 @@ class EventPreview:
         text = re.sub(r'https?://\S+', ' ', text)
         text = re.sub(r'(?:notes?|description|details?):\s*.*$', ' ', text,
                       flags=re.IGNORECASE)
-        return text
+        return date_parser.strip_until(text)
 
     def without_date(self, text: str) -> str:
         """Text with any explicit date removed, so it cannot leak into the
@@ -132,6 +131,16 @@ class EventPreview:
         text_lower = self.strip_extras(text.lower())
         today = datetime.now()
         target_date = None
+
+        # A range is shown whole. Its text is removed first, otherwise the day
+        # number of the second date is read as the time.
+        date_range = date_parser.find_date_range(text_lower)
+        if date_range:
+            start, end, range_str = date_range
+            rest = date_parser.strip_date(text_lower, range_str)
+            at_time = self.parse_time(rest)
+            span = f"{start.strftime('%B %-d')} – {end.strftime('%B %-d')}"
+            return f"{span} at {at_time.strftime('%-I:%M %p')}" if at_time else span
 
         # An explicit date wins over everything else, and has to be removed
         # before the time is parsed so "Oct 21" is not read as 21:00.
@@ -194,6 +203,8 @@ class EventPreview:
         # Remove date/time patterns
         patterns_to_remove = [
             r'\b(?:tomorrow|today|next|on|at|from|to|every|daily|weekly|monthly)\b.*$',
+            date_parser.UNTIL_PATTERN,
+            date_parser.TIME_RANGE_PATTERN + r'.*$',
             r'\d{1,2}(?::(\d{2}))?\s*(?:' + self.meridiem + r')\b.*$',
             r'for\s+\d+\s+(?:day|hour|minute|min)s?.*$',
             r'(?:alert|remind).*$',
