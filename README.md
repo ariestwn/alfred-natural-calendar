@@ -1,3 +1,5 @@
+
+
 # Natural Language Calendar Alfred Workflow
 
 An Alfred workflow that allows you to create calendar events using natural language.
@@ -34,6 +36,8 @@ cl team sync every monday at 10am
 ```
 
 ### `clprofile` - Set Default Calendar
+
+Run `clprofile` to view your available calendars. You can type to filter the list, then press Enter on a calendar to set it as your default.
 
 ## Basic Event Creation
 
